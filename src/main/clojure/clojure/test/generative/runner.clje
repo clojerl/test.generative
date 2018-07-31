@@ -9,17 +9,17 @@
 
 (ns clojure.test.generative.runner
   (:require
-   [clojure.tools.namespace.find :as ns]
    [clojure.data.generators :as gen]
-   [clojure.test.generative :as tgen]))
+   [clojure.test.generative :as tgen]
+   [clojure.string :as str]))
 
-(set! *warn-on-reflection* true)
+(set! *warn-on-infer* true)
 
 (def ^:private config-mapping
      [["clojure.test.generative.threads"
        [:nthreads]
        read-string
-       (max 1 (dec (.availableProcessors (Runtime/getRuntime))))]
+       (max 1 (dec (erlang/system_info :schedulers)))]
       ["clojure.test.generative.msec"
        [:msec]
        read-string
@@ -30,35 +30,28 @@
   []
   (reduce
    (fn [m [prop path coerce default]]
-     (let [val (System/getProperty prop)]
+     (let [val (os/getenv prop "")]
        (if (seq val)
          (assoc-in m path (coerce val))
          (assoc-in m path default))))
    {}
    config-mapping))
 
-(def ^:private ^java.util.Random rnd (java.util.Random. (System/currentTimeMillis)))
-
-(defn- next-seed
-  []
-  (locking rnd
-    (.nextInt rnd)))
-
 (defprotocol Testable
   (get-tests [_]))
 
 (extend-protocol Testable
-  clojure.lang.Var 
+  clojerl.Var
   (get-tests
-   [v]
+   [^clojerl.Var v]
    (let [m (meta v)
          arg-fns (::tgen/arg-fns m)
          specs (::tgen/specs m)]
      (cond
       arg-fns
-      [{:test (-> (if-let [ns (.ns v)]
-                    (str ns "/" (.sym v))
-                    (.sym v))
+      [{:test (-> (if-let [ns (find-ns (.namespace v))]
+                    (str ns "/" (.name v))
+                    (.name v))
                   symbol)
         :input-gen (fn []
                      (repeatedly
@@ -68,6 +61,19 @@
       specs
       @v))))
 
+(defn- path->symbol [root path]
+  (let [path (if root
+               (subs path (count root))
+               path)
+        ns-name (-> path
+                    filename/rootname
+                    (str/replace #"/" ".")
+                    (str/replace #"_" "-"))
+        ns-symbol (symbol ns-name)]
+    ns-symbol))
+
+(defn find-namespaces-in-dir [dir]
+  [])
 
 (defn- find-vars-in-namespaces
   [& nses]
@@ -76,7 +82,7 @@
 
 (defn- find-vars-in-dirs
   [& dirs]
-  (let [nses (mapcat #(ns/find-namespaces-in-dir (java.io.File. ^String %)) dirs)]
+  (let [nses (mapcat #(find-namespaces-in-dir (erlang.io.File. %)) dirs)]
     (doseq [ns nses] (require ns))
     (apply find-vars-in-namespaces nses)))
 
@@ -86,11 +92,11 @@
    Returns as many status maps as seeds passed in."
   [{:keys [test input-gen]} {:keys [msec seeds]}]
   (let [f (eval test)
-        start (System/currentTimeMillis)
+        start (erlang/monotonic_time :milli_seconds)
         futs (mapv
               #(future
                 (try
-                 (binding [gen/*rnd* (java.util.Random. %)]
+                 (gen/with-seed %
                    (loop [iter 0
                           [input & more] (input-gen)]
                      (let [status {:iter iter :seed % :test test :input input}]
@@ -98,9 +104,11 @@
                          (let [failure (try
                                         (apply f input)
                                         nil
-                                        (catch Throwable t
-                                          (assoc status :exception t) ))
-                               now (System/currentTimeMillis)]
+                                        (catch _ t :stack stack
+                                          (assoc status
+                                                 :exception t
+                                                 :stack stack)))
+                               now (erlang/monotonic_time :milli_seconds)]
                            (cond
                             failure failure
                             (< now (+ start msec)) (recur (inc iter) more)
@@ -114,6 +122,9 @@
   [result]
   (contains? result :exception))
 
+(defn next-seed []
+  (rand/uniform 1000000000000))
+
 (defn- run-n
   "Run tests in parallel on nthreads, dividing msec equally between the tests.
    Returns a list of maps of :iter, :seed"
@@ -123,7 +134,11 @@
                      :seeds (repeatedly nthreads next-seed)})
           tests))
 
-(def ^:private serializer (agent nil))
+(def ^:private serializer #_(agent nil))
+
+(defn print-stack-trace
+  [stack]
+  (io/format (clj_utils/format_stacktrace stack)))
 
 (defn serialized
   "Returns a function that calls f for side effects, async,
@@ -135,28 +150,23 @@
                  (fn [_]
                    (try
                     (apply f args)
-                    (catch Throwable t
-                      (.printStackTrace t)))
+                    (catch _ t :stack stack
+                      (print-stack-trace stack)))
                    nil))
        nil)))
 
-(def prf
+(defn prf
   "Print and flush."
-  (serialized (fn [s]
-                (binding [*out* *err*]
-                  (print s)
-                  (flush)))))
-
-(def print-stack-trace
-  (serialized (fn [^Throwable t] (.printStackTrace t))))
-
-(def sprn (serialized prn))
+  [s]
+  (binding [*out* *err*]
+    (print s)
+    (flush)))
 
 (defn dir-tests
   "Returns all tests in dirs"
   [dirs]
   (let [load (fn [s] (require s) s)]
-    (->> (mapcat #(ns/find-namespaces-in-dir (java.io.File. ^String %)) dirs)
+    (->> (mapcat #(find-namespaces-in-dir (erlang.io.File. %)) dirs)
          (map load)
          (apply find-vars-in-namespaces)
          (mapcat get-tests))))
@@ -185,9 +195,9 @@
         ret (reduce
              (fn [{:keys [failures iters nresults]} result]
                (when (:exception result)
-                 (print-stack-trace (:exception result)))
+                 (print-stack-trace (:stack result)))
                (if (:exception result)
-                 (sprn result)
+                 (prn result)
                  (progress))
                {:failures (+ failures (if (:exception result) 1 0))
                 :iters (+ iters (:iter result))
@@ -207,15 +217,9 @@
     (try
      (let [result (run-suite (config) (dir-tests dirs))]
        (println "\n" result)
-       (System/exit (:failures result)))
-     (catch Throwable t
-       (.printStackTrace t)
-       (System/exit -1))
-     (finally
-      (shutdown-agents)))
+       (erlang/halt (:failures result)))
+     (catch _ t
+       (erlang/halt -1)))
     (do
       (println "Specify at least one directory with tests")
-      (System/exit -1))))
-
-
-
+      (erlang/halt -1))))

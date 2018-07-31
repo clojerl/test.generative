@@ -1,2 +1,4 @@
 target
 .tg/*
+_build/
+rebar.lock
