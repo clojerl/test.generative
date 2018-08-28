@@ -50,7 +50,7 @@
      (cond
       arg-fns
       [{:test (-> (if-let [ns (find-ns (.namespace v))]
-                    (str ns "/" (.name v))
+                    (str (.name ns) "/" (.name v))
                     (.name v))
                   symbol)
         :input-gen (fn []
