@@ -49,7 +49,7 @@
          specs (::tgen/specs m)]
      (cond
       arg-fns
-      [{:test (-> (if-let [ns (find-ns (.namespace v))]
+      [{:test (-> (if-let [^clojerl.Namespace ns (find-ns (.namespace v))]
                     (str (.name ns) "/" (.name v))
                     (.name v))
                   symbol)
@@ -92,30 +92,28 @@
    Returns as many status maps as seeds passed in."
   [{:keys [test input-gen]} {:keys [msec seeds]}]
   (let [f (eval test)
-        start (erlang/monotonic_time :milli_seconds)
-        futs (mapv
-              #(future
-                (try
-                 (gen/with-seed %
-                   (loop [iter 0
-                          [input & more] (input-gen)]
-                     (let [status {:iter iter :seed % :test test :input input}]
-                       (if input
-                         (let [failure (try
-                                        (apply f input)
-                                        nil
-                                        (catch _ t :stack stack
-                                          (assoc status
-                                                 :exception t
-                                                 :stack stack)))
-                               now (erlang/monotonic_time :milli_seconds)]
-                           (cond
-                            failure failure
-                            (< now (+ start msec)) (recur (inc iter) more)
-                            :else (select-keys status [:test :seed :iter])))
-                         (assoc status :exhausted true)))))))
-              seeds)]
-    (map deref futs)))
+        start (erlang/monotonic_time :milli_seconds)]
+    (mapv
+     #(try
+        (gen/with-seed %
+          (loop [iter 0
+                 [input & more] (input-gen)]
+            (let [status {:iter iter :seed % :test test :input input}]
+              (if input
+                (let [failure (try
+                                (apply f input)
+                                nil
+                                (catch _ t :stack stack
+                                       (assoc status
+                                              :exception t
+                                              :stack stack)))
+                      now (erlang/monotonic_time :milli_seconds)]
+                  (cond
+                    failure failure
+                    (< now (+ start msec)) (recur (inc iter) more)
+                    :else (select-keys status [:test :seed :iter])))
+                (assoc status :exhausted true))))))
+     seeds)))
 
 (defn- failed?
   "Does test result indicate a failure?"

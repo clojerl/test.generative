@@ -2,3 +2,5 @@ target
 .tg/*
 _build/
 rebar.lock
+.rebar3/
+ebin/
