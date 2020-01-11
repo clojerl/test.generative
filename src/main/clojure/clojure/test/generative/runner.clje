@@ -217,7 +217,7 @@
        (println "\n" result)
        (erlang/halt (:failures result)))
      (catch _ t
-       (erlang/halt -1)))
+       (erlang/halt 1)))
     (do
       (println "Specify at least one directory with tests")
-      (erlang/halt -1))))
+      (erlang/halt 1))))
