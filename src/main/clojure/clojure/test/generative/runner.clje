@@ -9,6 +9,7 @@
 
 (ns clojure.test.generative.runner
   (:require
+   [clojure.tools.namespace :as ns]
    [clojure.data.generators :as gen]
    [clojure.test.generative :as tgen]
    [clojure.string :as str]))
@@ -30,7 +31,10 @@
   []
   (reduce
    (fn [m [prop path coerce default]]
-     (let [val (os/getenv prop "")]
+     (let [val (-> prop
+                   erlang/binary_to_list
+                   (os/getenv #erl"")
+                   erlang/list_to_binary)]
        (if (seq val)
          (assoc-in m path (coerce val))
          (assoc-in m path default))))
@@ -72,9 +76,6 @@
         ns-symbol (symbol ns-name)]
     ns-symbol))
 
-(defn find-namespaces-in-dir [dir]
-  [])
-
 (defn- find-vars-in-namespaces
   [& nses]
   (when nses
@@ -82,7 +83,7 @@
 
 (defn- find-vars-in-dirs
   [& dirs]
-  (let [nses (mapcat #(find-namespaces-in-dir (erlang.io.File. %)) dirs)]
+  (let [nses (mapcat #(ns/find-namespaces-in-dir %) dirs)]
     (doseq [ns nses] (require ns))
     (apply find-vars-in-namespaces nses)))
 
@@ -164,7 +165,7 @@
   "Returns all tests in dirs"
   [dirs]
   (let [load (fn [s] (require s) s)]
-    (->> (mapcat #(find-namespaces-in-dir (erlang.io.File. %)) dirs)
+    (->> (mapcat #(ns/find-namespaces-in-dir %) dirs)
          (map load)
          (apply find-vars-in-namespaces)
          (mapcat get-tests))))
